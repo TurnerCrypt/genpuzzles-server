@@ -148,6 +148,8 @@ const DIRECTIONS = [
 // =====================================================
 const rooms = {};
 const socketRoom = {};
+const disconnectTimers = {}; // grace period timers for reconnecting players
+const playerNames = {};      // socketId -> { name, roomCode } for reconnect matching
 
 // =====================================================
 // GRID HELPERS
@@ -267,6 +269,53 @@ function isNameTaken(name) {
 // =====================================================
 io.on('connection', (socket) => {
   console.log('Connected:', socket.id);
+
+  // Check if this is a reconnect - client sends their name and room code
+  socket.on('reconnect_player', ({ name, code }) => {
+    code = (code || '').trim().toUpperCase();
+    const room = rooms[code];
+    if (!room) return socket.emit('error', { message: 'Room no longer exists' });
+
+    // Find disconnected player with this name
+    const disconnectedEntry = Object.entries(room.players).find(
+      ([sid, p]) => p.name === name && p.disconnected
+    );
+
+    if (!disconnectedEntry) {
+      // Not found as disconnected - try joining fresh
+      socket.emit('reconnect_failed', {});
+      return;
+    }
+
+    const [oldSid, playerData] = disconnectedEntry;
+
+    // Cancel grace period timer
+    if (disconnectTimers[oldSid]) {
+      clearTimeout(disconnectTimers[oldSid]);
+      delete disconnectTimers[oldSid];
+    }
+    delete playerNames[oldSid];
+
+    // Transfer player to new socket
+    playerData.disconnected = false;
+    room.players[socket.id] = playerData;
+    delete room.players[oldSid];
+    socketRoom[socket.id] = code;
+    if (room.hostId === oldSid) room.hostId = socket.id;
+    socket.join(code);
+
+    const players = getPublicPlayers(room);
+    if (room.status === 'active') {
+      socket.emit('room_joined', { code, status: 'active', grid: room.grid, endsAt: room.endsAt, players });
+    } else {
+      socket.emit('room_joined', { code, status: 'waiting', players });
+      if (room.hostId === socket.id) {
+        socket.emit('room_created', { code, players });
+      }
+    }
+    io.to(code).emit('player_joined', { players });
+    console.log(`${name} reconnected to room ${code}`);
+  });
 
   socket.on('create_room', ({ name }) => {
     if (!name || !name.trim()) return socket.emit('error', { message: 'Enter your name first' });
@@ -399,37 +448,54 @@ io.on('connection', (socket) => {
     const room = rooms[code];
     if (!room) { delete socketRoom[socket.id]; return; }
 
-    const playerName = room.players[socket.id] ? room.players[socket.id].name : 'Unknown';
-    delete room.players[socket.id];
+    const player = room.players[socket.id];
+    const playerName = player ? player.name : 'Unknown';
+    const isHost = socket.id === room.hostId;
+
+    // Store info for potential reconnect
+    playerNames[socket.id] = { name: playerName, roomCode: code, isHost };
+
+    // Mark player as disconnected but don't remove yet - give 30s grace period
+    if (player) player.disconnected = true;
     delete socketRoom[socket.id];
     socket.leave(code);
 
-    const remaining = Object.keys(room.players).length;
+    // Grace period - if they reconnect within 30s, restore them
+    disconnectTimers[socket.id] = setTimeout(() => {
+      delete disconnectTimers[socket.id];
+      delete playerNames[socket.id];
 
-    if (socket.id === room.hostId && room.status === 'waiting') {
-      io.to(code).emit('room_closed', { message: 'Host left the room' });
-      deleteRoom(code);
-      Object.keys(room.players).forEach(sid => { delete socketRoom[sid]; });
-      delete rooms[code];
-      return;
-    }
+      // Now actually remove them
+      const r = rooms[code];
+      if (!r) return;
+      delete r.players[socket.id];
+      const remaining = Object.keys(r.players).length;
 
-    if (socket.id === room.hostId && room.status === 'active') {
-      const newHostId = Object.keys(room.players)[0];
-      if (newHostId) {
-        room.hostId = newHostId;
-        io.to(code).emit('host_changed', { newHostName: room.players[newHostId].name });
+      if (isHost && r.status === 'waiting') {
+        io.to(code).emit('room_closed', { message: 'Host left the room' });
+        deleteRoom(code);
+        Object.keys(r.players).forEach(sid => { delete socketRoom[sid]; });
+        delete rooms[code];
+        return;
       }
-    }
 
-    if (remaining === 0) {
-      if (room.timerInterval) clearInterval(room.timerInterval);
-      deleteRoom(code);
-      delete rooms[code];
-      return;
-    }
+      if (isHost && r.status === 'active') {
+        const newHostId = Object.keys(r.players)[0];
+        if (newHostId) {
+          r.hostId = newHostId;
+          io.to(code).emit('host_changed', { newHostName: r.players[newHostId].name });
+        }
+      }
 
-    io.to(code).emit('player_left', { playerName, players: getPublicPlayers(room) });
+      if (remaining === 0) {
+        if (r.timerInterval) clearInterval(r.timerInterval);
+        deleteRoom(code);
+        delete rooms[code];
+        return;
+      }
+
+      io.to(code).emit('player_left', { playerName, players: getPublicPlayers(r) });
+    }, isHost ? 10 * 60 * 1000 : 3 * 60 * 1000); // host: 10 min, player: 3 min
   }
 });
 
