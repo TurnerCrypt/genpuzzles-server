@@ -360,9 +360,14 @@ io.on('connection', (socket) => {
     socketRoom[socket.id] = code;
     socket.join(code);
 
-    // If host had disconnected, reassign
-    if (!room.hostId || !io.sockets.sockets.get(room.hostId)) {
+    // Only reassign host if the host slot is completely empty AND
+    // no player with hostName exists in the room (true disconnect, not just socket drift)
+    const hostStillPresent = Object.values(room.players).some(
+      p => p.name === room.hostName && !p.disconnected
+    );
+    if (!hostStillPresent && disconnectTimers[room.hostId] === undefined) {
       room.hostId = socket.id;
+      room.hostName = name;
     }
 
     const players = getPublicPlayers(room);
