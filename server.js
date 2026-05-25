@@ -477,10 +477,12 @@ io.on('connection', (socket) => {
     // Store info for potential reconnect
     playerNames[socket.id] = { name: playerName, roomCode: code, isHost };
 
-    // Mark player as disconnected but don't remove yet - give 30s grace period
+    // Mark player as disconnected silently - no notification yet
     if (player) player.disconnected = true;
     delete socketRoom[socket.id];
     socket.leave(code);
+    // Tell room the player is temporarily away (not fully left)
+    io.to(code).emit('player_away', { playerName, players: getPublicPlayers(room) });
 
     // Grace period - if they reconnect within 30s, restore them
     disconnectTimers[socket.id] = setTimeout(() => {
@@ -491,7 +493,7 @@ io.on('connection', (socket) => {
       const r = rooms[code];
       if (!r) return;
       delete r.players[socket.id];
-      const remaining = Object.keys(r.players).length;
+      const remaining = Object.keys(r.players).filter(sid => !r.players[sid].disconnected).length;
 
       if (isHost && r.status === 'waiting') {
         io.to(code).emit('room_closed', { message: 'Host left the room' });
@@ -502,14 +504,15 @@ io.on('connection', (socket) => {
       }
 
       if (isHost && r.status === 'active') {
-        const newHostId = Object.keys(r.players)[0];
+        // Find next non-disconnected player to be host
+        const newHostId = Object.keys(r.players).find(sid => !r.players[sid].disconnected);
         if (newHostId) {
           r.hostId = newHostId;
           io.to(code).emit('host_changed', { newHostName: r.players[newHostId].name });
         }
       }
 
-      if (remaining === 0) {
+      if (Object.keys(r.players).length === 0) {
         if (r.timerInterval) clearInterval(r.timerInterval);
         deleteRoom(code);
         delete rooms[code];
