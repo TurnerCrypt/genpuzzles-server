@@ -380,7 +380,20 @@ io.on('connection', (socket) => {
     if (!code) return socket.emit('error', { message: 'Not in a room' });
     const room = rooms[code];
     if (!room) return socket.emit('error', { message: 'Room not found' });
-    if (room.hostId !== socket.id) return socket.emit('error', { message: 'Only the host can start' });
+
+    // Check by socket ID first, then by host name as fallback for reconnected hosts
+    const player = room.players[socket.id];
+    const isHost = room.hostId === socket.id ||
+      (player && player.name === room.hostName);
+
+    if (!isHost) return socket.emit('error', { message: 'Only the host can start' });
+
+    // If matched by name but socket ID drifted, fix it
+    if (room.hostId !== socket.id && player && player.name === room.hostName) {
+      console.log(`Fixing host socket: ${room.hostId} -> ${socket.id}`);
+      room.hostId = socket.id;
+    }
+
     if (Object.keys(room.players).length < 2) return socket.emit('error', { message: 'Need at least 2 players to start' });
     if (room.status === 'active') return;
 
@@ -427,17 +440,24 @@ io.on('connection', (socket) => {
   socket.on('end_game', () => {
     const code = socketRoom[socket.id];
     if (!code || !rooms[code]) return;
-    if (rooms[code].hostId !== socket.id) return;
+    const room = rooms[code];
+    const player = room.players[socket.id];
+    const isHost = room.hostId === socket.id || (player && player.name === room.hostName);
+    if (!isHost) return;
+    if (room.hostId !== socket.id) room.hostId = socket.id;
     endRoom(code, 'host_ended');
   });
 
   socket.on('end_room', () => {
     const code = socketRoom[socket.id];
     if (!code || !rooms[code]) return;
-    if (rooms[code].hostId !== socket.id) return;
+    const room = rooms[code];
+    const player = room.players[socket.id];
+    const isHost = room.hostId === socket.id || (player && player.name === room.hostName);
+    if (!isHost) return;
     io.to(code).emit('room_closed', { message: 'Host closed the room' });
     deleteRoom(code);
-    Object.keys(rooms[code].players).forEach(sid => { delete socketRoom[sid]; });
+    Object.keys(room.players).forEach(sid => { delete socketRoom[sid]; });
     delete rooms[code];
   });
 
