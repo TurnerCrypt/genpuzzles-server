@@ -305,16 +305,18 @@ io.on('connection', (socket) => {
     socket.join(code);
 
     const players = getPublicPlayers(room);
-    if (room.status === 'active') {
-      socket.emit('room_joined', { code, status: 'active', grid: room.grid, endsAt: room.endsAt, players });
-    } else {
-      socket.emit('room_joined', { code, status: 'waiting', players });
-      if (room.hostId === socket.id) {
-        socket.emit('room_created', { code, players });
-      }
-    }
+    const isNowHost = room.hostId === socket.id;
+    // Send a single clean reconnected event with all state
+    socket.emit('player_reconnected', {
+      code,
+      status: room.status,
+      grid: room.grid,
+      endsAt: room.endsAt,
+      players,
+      isHost: isNowHost
+    });
     io.to(code).emit('player_joined', { players });
-    console.log(`${name} reconnected to room ${code}`);
+    console.log(`${name} reconnected to room ${code} (host: ${isNowHost})`);
   });
 
   socket.on('create_room', ({ name }) => {
