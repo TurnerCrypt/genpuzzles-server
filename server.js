@@ -441,10 +441,25 @@ app.get('/', (req, res) => {
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
+app.get('/ping', (req, res) => res.json({ pong: true, time: Date.now() }));
+
 // =====================================================
 // START
 // =====================================================
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`GenPuzzles server running on port ${PORT}`);
+
+  // Self-ping every 4 minutes to prevent Render free tier sleep
+  const SELF_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+  setInterval(() => {
+    const http = require('http');
+    const https = require('https');
+    const mod = SELF_URL.startsWith('https') ? https : http;
+    mod.get(SELF_URL + '/ping', (res) => {
+      console.log('Self-ping OK:', res.statusCode);
+    }).on('error', (e) => {
+      console.log('Self-ping error:', e.message);
+    });
+  }, 4 * 60 * 1000); // every 4 minutes
 });
