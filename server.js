@@ -235,13 +235,15 @@ function generateCode() {
 // ROOM HELPERS
 // =====================================================
 function getPublicPlayers(room) {
-  return Object.entries(room.players).map(([id, p]) => ({
-    id, name: p.name,
-    wordsFound: p.wordsFound.length,
-    lastWordAt: p.lastWordAt,
-    finishedAt: p.finishedAt,
-    isHost: id === room.hostId
-  }));
+  return Object.entries(room.players)
+    .filter(([id, p]) => !p.disconnected)
+    .map(([id, p]) => ({
+      id, name: p.name,
+      wordsFound: p.wordsFound.length,
+      lastWordAt: p.lastWordAt,
+      finishedAt: p.finishedAt,
+      isHost: id === room.hostId
+    }));
 }
 
 function endRoom(code, reason) {
@@ -454,7 +456,8 @@ io.on('connection', (socket) => {
       room.hostId = socket.id;
     }
 
-    if (Object.keys(room.players).length < 2) return socket.emit('error', { message: 'Need at least 2 players to start' });
+    const connectedCount = Object.values(room.players).filter(p => !p.disconnected).length;
+    if (connectedCount < 2) return socket.emit('error', { message: 'Need at least 2 players to start' });
     if (room.status === 'active') return;
 
     const { grid, placements } = generateGrid(WORD_LIST);
