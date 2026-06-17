@@ -155,35 +155,54 @@ const playerNames = {};      // socketId -> { name, roomCode } for reconnect mat
 // GRID HELPERS
 // =====================================================
 function generateGrid(words) {
-  const grid = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(''));
-  const placements = {};
-  const shuffled = [...words].sort(() => Math.random() - 0.5);
-  for (const word of shuffled) {
-    let placed = false, attempts = 0;
-    while (!placed && attempts < 300) {
-      attempts++;
-      const [dr, dc] = DIRECTIONS[Math.floor(Math.random() * DIRECTIONS.length)];
-      const r = Math.floor(Math.random() * GRID_SIZE);
-      const c = Math.floor(Math.random() * GRID_SIZE);
-      const cells = [];
-      let valid = true;
-      for (let i = 0; i < word.length; i++) {
-        const nr = r + dr * i, nc = c + dc * i;
-        if (nr < 0 || nr >= GRID_SIZE || nc < 0 || nc >= GRID_SIZE) { valid = false; break; }
-        if (grid[nr][nc] !== '' && grid[nr][nc] !== word[i]) { valid = false; break; }
-        cells.push([nr, nc]);
+  const MAX_GRID_ATTEMPTS = 50;
+  const MAX_WORD_ATTEMPTS = 500;
+
+  for (let gridAttempt = 0; gridAttempt < MAX_GRID_ATTEMPTS; gridAttempt++) {
+    const grid = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(''));
+    const placements = {};
+    // Longest words first: they have the fewest valid positions, so they
+    // need first pick of empty space. Placing short words first was what
+    // caused long words to randomly fail to fit later in the process.
+    const ordered = [...words].sort((a, b) => b.length - a.length);
+    let allPlaced = true;
+
+    for (const word of ordered) {
+      let placed = false, attempts = 0;
+      while (!placed && attempts < MAX_WORD_ATTEMPTS) {
+        attempts++;
+        const [dr, dc] = DIRECTIONS[Math.floor(Math.random() * DIRECTIONS.length)];
+        const r = Math.floor(Math.random() * GRID_SIZE);
+        const c = Math.floor(Math.random() * GRID_SIZE);
+        const cells = [];
+        let valid = true;
+        for (let i = 0; i < word.length; i++) {
+          const nr = r + dr * i, nc = c + dc * i;
+          if (nr < 0 || nr >= GRID_SIZE || nc < 0 || nc >= GRID_SIZE) { valid = false; break; }
+          if (grid[nr][nc] !== '' && grid[nr][nc] !== word[i]) { valid = false; break; }
+          cells.push([nr, nc]);
+        }
+        if (!valid) continue;
+        cells.forEach(([nr, nc], i) => { grid[nr][nc] = word[i]; });
+        placements[word] = cells.map(([nr, nc]) => ({ r: nr, c: nc }));
+        placed = true;
       }
-      if (!valid) continue;
-      cells.forEach(([nr, nc], i) => { grid[nr][nc] = word[i]; });
-      placements[word] = cells.map(([nr, nc]) => ({ r: nr, c: nc }));
-      placed = true;
+      if (!placed) { allPlaced = false; break; }
     }
+
+    if (allPlaced) {
+      const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+      for (let r = 0; r < GRID_SIZE; r++)
+        for (let c = 0; c < GRID_SIZE; c++)
+          if (!grid[r][c]) grid[r][c] = letters[Math.floor(Math.random() * 26)];
+      return { grid, placements };
+    }
+    // This grid attempt failed to fit every word, start over with a fresh grid.
   }
-  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-  for (let r = 0; r < GRID_SIZE; r++)
-    for (let c = 0; c < GRID_SIZE; c++)
-      if (!grid[r][c]) grid[r][c] = letters[Math.floor(Math.random() * 26)];
-  return { grid, placements };
+
+  // Should not happen with 20 words on a 15x15 grid, but fail loudly rather
+  // than silently shipping a grid that's missing a word.
+  throw new Error('generateGrid: failed to place all words after ' + MAX_GRID_ATTEMPTS + ' grid attempts');
 }
 
 function buildPlacementsFromGrid(grid, words) {
