@@ -276,7 +276,7 @@ function isNameTaken(name) {
   for (const code in rooms) {
     if (rooms[code].status === 'waiting') {
       for (const p of Object.values(rooms[code].players)) {
-        if (p.name.toLowerCase() === name.toLowerCase()) return true;
+        if (!p.disconnected && p.name.toLowerCase() === name.toLowerCase()) return true;
       }
     }
   }
@@ -369,8 +369,44 @@ io.on('connection', (socket) => {
     if (!room) return socket.emit('error', { message: 'Room not found. Check the code.' });
     if (room.status === 'finished') return socket.emit('error', { message: 'That game already ended' });
 
+    // If a disconnected player with this exact name already exists in the
+    // room, treat this as them reclaiming their old slot rather than a
+    // name conflict. This covers the case where the client lost its
+    // in-memory state (e.g. tab was minimized/suspended long enough that
+    // it forgot roomCode/playerName) and fell back to the manual join
+    // flow instead of emitting reconnect_player.
+    const staleEntry = Object.entries(room.players).find(
+      ([sid, p]) => p.disconnected && p.name.toLowerCase() === name.toLowerCase()
+    );
+    if (staleEntry) {
+      const [oldSid, playerData] = staleEntry;
+      if (disconnectTimers[oldSid]) {
+        clearTimeout(disconnectTimers[oldSid]);
+        delete disconnectTimers[oldSid];
+      }
+      delete playerNames[oldSid];
+
+      playerData.disconnected = false;
+      room.players[socket.id] = playerData;
+      delete room.players[oldSid];
+      socketRoom[socket.id] = code;
+      if (room.hostId === oldSid) room.hostId = socket.id;
+      socket.join(code);
+
+      const players = getPublicPlayers(room);
+      const isNowHost = room.hostId === socket.id;
+      if (room.status === 'active') {
+        socket.emit('room_joined', { code, status: 'active', grid: room.grid, endsAt: room.endsAt, players, isHost: isNowHost });
+      } else {
+        socket.emit('room_joined', { code, status: 'waiting', players, isHost: isNowHost });
+      }
+      io.to(code).emit('player_joined', { players });
+      console.log(`${name} rejoined room ${code} (reclaimed disconnected slot)`);
+      return;
+    }
+
     for (const p of Object.values(room.players)) {
-      if (p.name.toLowerCase() === name.toLowerCase())
+      if (!p.disconnected && p.name.toLowerCase() === name.toLowerCase())
         return socket.emit('error', { message: 'Name already taken in this room' });
     }
     if (isNameTaken(name)) return socket.emit('error', { message: 'Name already in use. Pick another.' });
