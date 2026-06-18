@@ -465,7 +465,9 @@ io.on('connection', (socket) => {
     room.placements = placements;
     room.status = 'active';
     room.startedAt = Date.now();
-    room.endsAt = Date.now() + GAME_DURATION * 1000;
+    // Add 4s to cover the 3-second client countdown animation plus network latency,
+    // so all players see exactly 5:00 when the grid appears.
+    room.endsAt = Date.now() + GAME_DURATION * 1000 + 4000;
 
     io.to(code).emit('game_started', { grid, endsAt: room.endsAt, players: getPublicPlayers(room) });
     saveRoom(room);
