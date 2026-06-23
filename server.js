@@ -371,6 +371,10 @@ io.on('connection', (socket) => {
     if (!room) return socket.emit('error', { message: 'Room not found. Check the code.' });
     if (room.status === 'finished') return socket.emit('error', { message: 'That game already ended' });
 
+    const MAX_ROOM_SIZE = 200;
+    const currentSize = Object.values(room.players).filter(p => !p.disconnected).length;
+    if (currentSize >= MAX_ROOM_SIZE) return socket.emit('error', { message: 'Room is full (200 players max)' });
+
     // If a disconnected player with this exact name already exists in the
     // room, treat this as them reclaiming their old slot rather than a
     // name conflict. This covers the case where the client lost its
