@@ -130,10 +130,10 @@ async function loadActiveRooms() {
 // WORD LIST
 // =====================================================
 const WORD_LIST = [
-  'CONSENSUS','VALIDATOR','GENLAYER','CONTRACT','TESTNET',
-  'BRADBURY','FINALIZED','ACCEPTED','PYTHON','STAKING',
-  'OPTIMISTIC','DELEGATED','APPEAL','GENVM','ORACLE',
-  'SANDBOX','WEBHOOK','VOTING','ROLLUP','DISPATCH'
+  'ADJUDICATE','UNHARDCODED','NEUROCREATIVE','SINGULARITY',
+  'INTERNETCOURT','ARGUEDOTFUN','GENLAYERLABS','FUDMARKETS',
+  'AGENTICERA','SYNAPSE','RALLY','GENFRENS','ONCHAIN',
+  'MOLECULE','BRAIN','WINGSTON','POAP','GENTV','GENNEWS','XP'
 ];
 
 const GRID_SIZE = 15;
@@ -155,18 +155,12 @@ const playerNames = {};      // socketId -> { name, roomCode } for reconnect mat
 // GRID HELPERS
 // =====================================================
 function generateGrid(words) {
-  const MAX_GRID_ATTEMPTS = 50;
-  const MAX_WORD_ATTEMPTS = 500;
-
+  const MAX_GRID_ATTEMPTS = 50, MAX_WORD_ATTEMPTS = 500;
   for (let gridAttempt = 0; gridAttempt < MAX_GRID_ATTEMPTS; gridAttempt++) {
     const grid = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(''));
     const placements = {};
-    // Longest words first: they have the fewest valid positions, so they
-    // need first pick of empty space. Placing short words first was what
-    // caused long words to randomly fail to fit later in the process.
     const ordered = [...words].sort((a, b) => b.length - a.length);
     let allPlaced = true;
-
     for (const word of ordered) {
       let placed = false, attempts = 0;
       while (!placed && attempts < MAX_WORD_ATTEMPTS) {
@@ -189,7 +183,6 @@ function generateGrid(words) {
       }
       if (!placed) { allPlaced = false; break; }
     }
-
     if (allPlaced) {
       const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
       for (let r = 0; r < GRID_SIZE; r++)
@@ -197,12 +190,8 @@ function generateGrid(words) {
           if (!grid[r][c]) grid[r][c] = letters[Math.floor(Math.random() * 26)];
       return { grid, placements };
     }
-    // This grid attempt failed to fit every word, start over with a fresh grid.
   }
-
-  // Should not happen with 20 words on a 15x15 grid, but fail loudly rather
-  // than silently shipping a grid that's missing a word.
-  throw new Error('generateGrid: failed to place all words after ' + MAX_GRID_ATTEMPTS + ' grid attempts');
+  throw new Error('generateGrid: failed after 50 attempts');
 }
 
 function buildPlacementsFromGrid(grid, words) {
@@ -235,15 +224,13 @@ function generateCode() {
 // ROOM HELPERS
 // =====================================================
 function getPublicPlayers(room) {
-  return Object.entries(room.players)
-    .filter(([id, p]) => !p.disconnected)
-    .map(([id, p]) => ({
-      id, name: p.name,
-      wordsFound: p.wordsFound.length,
-      lastWordAt: p.lastWordAt,
-      finishedAt: p.finishedAt,
-      isHost: id === room.hostId
-    }));
+  return Object.entries(room.players).map(([id, p]) => ({
+    id, name: p.name,
+    wordsFound: p.wordsFound.length,
+    lastWordAt: p.lastWordAt,
+    finishedAt: p.finishedAt,
+    isHost: id === room.hostId
+  }));
 }
 
 function endRoom(code, reason) {
@@ -375,30 +362,19 @@ io.on('connection', (socket) => {
     const currentSize = Object.values(room.players).filter(p => !p.disconnected).length;
     if (currentSize >= MAX_ROOM_SIZE) return socket.emit('error', { message: 'Room is full (200 players max)' });
 
-    // If a disconnected player with this exact name already exists in the
-    // room, treat this as them reclaiming their old slot rather than a
-    // name conflict. This covers the case where the client lost its
-    // in-memory state (e.g. tab was minimized/suspended long enough that
-    // it forgot roomCode/playerName) and fell back to the manual join
-    // flow instead of emitting reconnect_player.
     const staleEntry = Object.entries(room.players).find(
       ([sid, p]) => p.disconnected && p.name.toLowerCase() === name.toLowerCase()
     );
     if (staleEntry) {
       const [oldSid, playerData] = staleEntry;
-      if (disconnectTimers[oldSid]) {
-        clearTimeout(disconnectTimers[oldSid]);
-        delete disconnectTimers[oldSid];
-      }
+      if (disconnectTimers[oldSid]) { clearTimeout(disconnectTimers[oldSid]); delete disconnectTimers[oldSid]; }
       delete playerNames[oldSid];
-
       playerData.disconnected = false;
       room.players[socket.id] = playerData;
       delete room.players[oldSid];
       socketRoom[socket.id] = code;
       if (room.hostId === oldSid) room.hostId = socket.id;
       socket.join(code);
-
       const players = getPublicPlayers(room);
       const isNowHost = room.hostId === socket.id;
       if (room.status === 'active') {
@@ -407,10 +383,8 @@ io.on('connection', (socket) => {
         socket.emit('room_joined', { code, status: 'waiting', players, isHost: isNowHost });
       }
       io.to(code).emit('player_joined', { players });
-      console.log(`${name} rejoined room ${code} (reclaimed disconnected slot)`);
       return;
     }
-
     for (const p of Object.values(room.players)) {
       if (!p.disconnected && p.name.toLowerCase() === name.toLowerCase())
         return socket.emit('error', { message: 'Name already taken in this room' });
@@ -460,8 +434,7 @@ io.on('connection', (socket) => {
       room.hostId = socket.id;
     }
 
-    const connectedCount = Object.values(room.players).filter(p => !p.disconnected).length;
-    if (connectedCount < 2) return socket.emit('error', { message: 'Need at least 2 players to start' });
+    if (Object.keys(room.players).length < 2) return socket.emit('error', { message: 'Need at least 2 players to start' });
     if (room.status === 'active') return;
 
     const { grid, placements } = generateGrid(WORD_LIST);
@@ -469,8 +442,6 @@ io.on('connection', (socket) => {
     room.placements = placements;
     room.status = 'active';
     room.startedAt = Date.now();
-    // Add 4s to cover the 3-second client countdown animation plus network latency,
-    // so all players see exactly 5:00 when the grid appears.
     room.endsAt = Date.now() + GAME_DURATION * 1000;
 
     io.to(code).emit('game_started', { grid, endsAt: room.endsAt, serverNow: Date.now(), players: getPublicPlayers(room) });
