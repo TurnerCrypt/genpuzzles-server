@@ -358,9 +358,9 @@ io.on('connection', (socket) => {
     if (!room) return socket.emit('error', { message: 'Room not found. Check the code.' });
     if (room.status === 'finished') return socket.emit('error', { message: 'That game already ended' });
 
-    const MAX_ROOM_SIZE = 200;
+    const MAX_ROOM_SIZE = 500;
     const currentSize = Object.values(room.players).filter(p => !p.disconnected).length;
-    if (currentSize >= MAX_ROOM_SIZE) return socket.emit('error', { message: 'Room is full (200 players max)' });
+    if (currentSize >= MAX_ROOM_SIZE) return socket.emit('error', { message: 'Room is full (500 players max)' });
 
     const staleEntry = Object.entries(room.players).find(
       ([sid, p]) => p.disconnected && p.name.toLowerCase() === name.toLowerCase()
