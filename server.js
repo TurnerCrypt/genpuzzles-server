@@ -239,9 +239,12 @@ function endRoom(code, reason) {
   if (room.timerInterval) { clearInterval(room.timerInterval); room.timerInterval = null; }
   room.status = 'finished';
 
-  const finalScores = getPublicPlayers(room).map(p => ({
+  // getPublicPlayers already maps wordsFound to its .length (a number).
+  // We also pull timeTaken directly from room.players since getPublicPlayers
+  // doesn't expose finishedAt/lastWordAt.
+  const finalScores = Object.values(room.players).map(p => ({
     name: p.name,
-    wordsFound: p.wordsFound,
+    wordsFound: Array.isArray(p.wordsFound) ? p.wordsFound.length : (p.wordsFound || 0),
     timeTaken: p.finishedAt
       ? Math.floor((p.finishedAt - room.startedAt) / 1000)
       : p.lastWordAt
