@@ -130,10 +130,10 @@ async function loadActiveRooms() {
 // WORD LIST
 // =====================================================
 const WORD_LIST = [
-  'NEUROGAMER','ROTATION','SIMULATOR','STAKEHOUND','STUDIO',
-  'TEAM','TRUSTLESS','UNDECIDABLE','UNSTOPPABLE','VELOCITY',
-  'ARCHITECTURE','WASM','DETERMINISTIC','LEADER','COMMITTEE',
-  'PROPOSAL','EQUIVOCATION','REPLAYABLE','CALLDATA','RUNNER'
+  'INTERNETCOURT','VERDICT','RESOLVE','DISPUTE','LITIGATION',
+  'AIAGENTS','LLM','CLARKE','SOLIDITY','AUDITS',
+  'MAINNET','WHITEPAPER','NODE','RUZGAR','RASKOVSKY',
+  'CASTELLANA','MOCHI','NEUROHOST','HACKATHON','PORTAL'
 ];
 
 const GRID_SIZE = 15;
@@ -239,11 +239,9 @@ function endRoom(code, reason) {
   if (room.timerInterval) { clearInterval(room.timerInterval); room.timerInterval = null; }
   room.status = 'finished';
 
-  // Build finalScores directly from room.players so we have access to
-  // finishedAt and lastWordAt — getPublicPlayers drops those fields.
-  const finalScores = Object.values(room.players).map(p => ({
+  const finalScores = getPublicPlayers(room).map(p => ({
     name: p.name,
-    wordsFound: Array.isArray(p.wordsFound) ? p.wordsFound.length : (p.wordsFound || 0),
+    wordsFound: p.wordsFound,
     timeTaken: p.finishedAt
       ? Math.floor((p.finishedAt - room.startedAt) / 1000)
       : p.lastWordAt
@@ -292,7 +290,20 @@ io.on('connection', (socket) => {
     );
 
     if (!disconnectedEntry) {
-      // Not found as disconnected - try joining fresh
+      // Not found as disconnected — grace period may have expired.
+      // Check if they're still in the room as a connected player
+      // (e.g. reconnect fired twice). If room exists, let client
+      // try a fresh join rather than hard-kicking with session expired.
+      const alreadyConnected = Object.values(room.players).find(p => p.name === name && !p.disconnected);
+      if (alreadyConnected) {
+        // Already reconnected, just resync state
+        socket.emit('player_reconnected', {
+          code, status: room.status, grid: room.grid,
+          endsAt: room.endsAt, players: getPublicPlayers(room),
+          isHost: false
+        });
+        return;
+      }
       socket.emit('reconnect_failed', {});
       return;
     }
@@ -526,7 +537,7 @@ io.on('connection', (socket) => {
     // Tell room the player is temporarily away (not fully left)
     io.to(code).emit('player_away', { playerName, players: getPublicPlayers(room) });
 
-    // Grace period - if they reconnect within 30s, restore them
+    // Grace period - if they reconnect within 120s, restore them
     disconnectTimers[socket.id] = setTimeout(() => {
       delete disconnectTimers[socket.id];
       delete playerNames[socket.id];
