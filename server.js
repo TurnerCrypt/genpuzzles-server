@@ -130,10 +130,10 @@ async function loadActiveRooms() {
 // WORD LIST
 // =====================================================
 const WORD_LIST = [
-  'JOSEMARIA','FINALITY','BUGOMISTR','BUILDERS','GLOBALMODERATOR',
-  'EDGARS','FOUNDATION','EQUIVALENCE','DAVID','DECISIONS',
-  'MINDBENDER','GLATCHER','ALBERT','FAIRNESS','MODERATOR',
-  'INTELLIGENT','DISCORDCORE','ACCESSIBILITY','BOLU','DEEPTHOUGHT'
+  'NEUROGAMER','ROTATION','SIMULATOR','STAKEHOUND','STUDIO',
+  'TEAM','TRUSTLESS','UNDECIDABLE','UNSTOPPABLE','VELOCITY',
+  'ARCHITECTURE','WASM','DETERMINISTIC','LEADER','COMMITTEE',
+  'PROPOSAL','EQUIVOCATION','REPLAYABLE','CALLDATA','RUNNER'
 ];
 
 const GRID_SIZE = 15;
@@ -239,9 +239,8 @@ function endRoom(code, reason) {
   if (room.timerInterval) { clearInterval(room.timerInterval); room.timerInterval = null; }
   room.status = 'finished';
 
-  // getPublicPlayers already maps wordsFound to its .length (a number).
-  // We also pull timeTaken directly from room.players since getPublicPlayers
-  // doesn't expose finishedAt/lastWordAt.
+  // Build finalScores directly from room.players so we have access to
+  // finishedAt and lastWordAt — getPublicPlayers drops those fields.
   const finalScores = Object.values(room.players).map(p => ({
     name: p.name,
     wordsFound: Array.isArray(p.wordsFound) ? p.wordsFound.length : (p.wordsFound || 0),
