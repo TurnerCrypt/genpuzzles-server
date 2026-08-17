@@ -130,10 +130,10 @@ async function loadActiveRooms() {
 // WORD LIST
 // =====================================================
 const WORD_LIST = [
-  'INTERNETCOURT','VERDICT','RESOLVE','DISPUTE','LITIGATION',
-  'AIAGENTS','LLM','CLARKE','SOLIDITY','AUDITS',
-  'MAINNET','WHITEPAPER','NODE','RUZGAR','RASKOVSKY',
-  'CASTELLANA','MOCHI','NEUROHOST','HACKATHON','PORTAL'
+  'NEUROGAMER','ROTATION','SIMULATOR','STAKEHOUND','STUDIO',
+  'TEAM','TRUSTLESS','UNDECIDABLE','UNSTOPPABLE','VELOCITY',
+  'ARCHITECTURE','WASM','DETERMINISTIC','LEADER','COMMITTEE',
+  'PROPOSAL','EQUIVOCATION','REPLAYABLE','CALLDATA','RUNNER'
 ];
 
 const GRID_SIZE = 15;
@@ -239,9 +239,9 @@ function endRoom(code, reason) {
   if (room.timerInterval) { clearInterval(room.timerInterval); room.timerInterval = null; }
   room.status = 'finished';
 
-  const finalScores = getPublicPlayers(room).map(p => ({
+  const finalScores = Object.values(room.players).map(p => ({
     name: p.name,
-    wordsFound: p.wordsFound,
+    wordsFound: Array.isArray(p.wordsFound) ? p.wordsFound.length : (p.wordsFound || 0),
     timeTaken: p.finishedAt
       ? Math.floor((p.finishedAt - room.startedAt) / 1000)
       : p.lastWordAt
@@ -290,20 +290,7 @@ io.on('connection', (socket) => {
     );
 
     if (!disconnectedEntry) {
-      // Not found as disconnected — grace period may have expired.
-      // Check if they're still in the room as a connected player
-      // (e.g. reconnect fired twice). If room exists, let client
-      // try a fresh join rather than hard-kicking with session expired.
-      const alreadyConnected = Object.values(room.players).find(p => p.name === name && !p.disconnected);
-      if (alreadyConnected) {
-        // Already reconnected, just resync state
-        socket.emit('player_reconnected', {
-          code, status: room.status, grid: room.grid,
-          endsAt: room.endsAt, players: getPublicPlayers(room),
-          isHost: false
-        });
-        return;
-      }
+      // Not found as disconnected - try joining fresh
       socket.emit('reconnect_failed', {});
       return;
     }
@@ -371,9 +358,9 @@ io.on('connection', (socket) => {
     if (!room) return socket.emit('error', { message: 'Room not found. Check the code.' });
     if (room.status === 'finished') return socket.emit('error', { message: 'That game already ended' });
 
-    const MAX_ROOM_SIZE = 200;
+    const MAX_ROOM_SIZE = 500;
     const currentSize = Object.values(room.players).filter(p => !p.disconnected).length;
-    if (currentSize >= MAX_ROOM_SIZE) return socket.emit('error', { message: 'Room is full (200 players max)' });
+    if (currentSize >= MAX_ROOM_SIZE) return socket.emit('error', { message: 'Room is full (500 players max)' });
 
     const staleEntry = Object.entries(room.players).find(
       ([sid, p]) => p.disconnected && p.name.toLowerCase() === name.toLowerCase()
