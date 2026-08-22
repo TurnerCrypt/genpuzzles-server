@@ -130,9 +130,10 @@ async function loadActiveRooms() {
 // WORD LIST
 // =====================================================
 const WORD_LIST = [
-  'FORK','BURN','HASH','MINT','NONCE','STAKE','BLOCK','SYBIL',
-  'QUORUM','COMMIT','REVEAL','SLASHING','MEMPOOL','LATENCY',
-  'GOSSIP','CPYTHON','PARTITION','IMMUTABLE','EVENTLOG','CONFORMANCE'
+  'NEUROGAMER','ROTATION','SIMULATOR','STAKEHOUND','STUDIO',
+  'TEAM','TRUSTLESS','UNDECIDABLE','UNSTOPPABLE','VELOCITY',
+  'ARCHITECTURE','WASM','DETERMINISTIC','LEADER','COMMITTEE',
+  'PROPOSAL','EQUIVOCATION','REPLAYABLE','CALLDATA','RUNNER'
 ];
 
 const GRID_SIZE = 15;
@@ -238,17 +239,22 @@ function endRoom(code, reason) {
   if (room.timerInterval) { clearInterval(room.timerInterval); room.timerInterval = null; }
   room.status = 'finished';
 
-  const finalScores = Object.values(room.players).map(p => ({
-    name: p.name,
-    wordsFound: Array.isArray(p.wordsFound) ? p.wordsFound.length : (p.wordsFound || 0),
-    timeTaken: p.finishedAt
-      ? Math.floor((p.finishedAt - room.startedAt) / 1000)
-      : p.lastWordAt
-        ? Math.floor((p.lastWordAt - room.startedAt) / 1000)
-        : GAME_DURATION
-  })).sort((a, b) => b.wordsFound - a.wordsFound || a.timeTaken - b.timeTaken);
+  // Wait 2 seconds before calculating final scores to allow any in-flight
+  // word_found events from the last seconds of the game to arrive first.
+  setTimeout(() => {
+    if (!rooms[code]) return;
+    const finalScores = Object.values(room.players).map(p => ({
+      name: p.name,
+      wordsFound: Array.isArray(p.wordsFound) ? p.wordsFound.length : (p.wordsFound || 0),
+      timeTaken: p.finishedAt
+        ? Math.floor((p.finishedAt - room.startedAt) / 1000)
+        : p.lastWordAt
+          ? Math.floor((p.lastWordAt - room.startedAt) / 1000)
+          : GAME_DURATION
+    })).sort((a, b) => b.wordsFound - a.wordsFound || a.timeTaken - b.timeTaken);
 
-  io.to(code).emit('game_ended', { reason, finalScores });
+    io.to(code).emit('game_ended', { reason, finalScores });
+  }, 2000);
   updateRoomStatus(code, 'finished');
 
   setTimeout(() => {
