@@ -23,20 +23,21 @@ const io = new Server(server, {
 // =====================================================
 // SUPABASE - persistence only (not realtime)
 // =====================================================
-const SUPABASE_URL = 'https://lgydlidqobjdyssuanqw.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxneWRsaWRxb2JqZHlzc3VhbnF3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk2ODU1NDAsImV4cCI6MjA5NTI2MTU0MH0.IxPMfmowznZbG2hIVbx7hTCv6-ZMdEHeoOMwNvavBMo';
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY;
 
 const fetch = require('node-fetch');
 
 async function sbQuery(method, table, body, params) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) throw new Error('Missing SUPABASE_URL or SUPABASE_SECRET_KEY');
   const url = new URL(`${SUPABASE_URL}/rest/v1/${table}`);
   if (params) Object.entries(params).forEach(([k,v]) => url.searchParams.set(k, v));
   const headers = {
     'apikey': SUPABASE_KEY,
-    'Authorization': `Bearer ${SUPABASE_KEY}`,
     'Content-Type': 'application/json',
-    'Prefer': 'return=representation'
+    'Prefer': method === 'POST' ? 'return=representation,resolution=merge-duplicates' : 'return=representation'
   };
+  if (SUPABASE_KEY.startsWith('eyJ')) headers.Authorization = `Bearer ${SUPABASE_KEY}`;
   const res = await fetch(url.toString(), {
     method,
     headers,
@@ -59,13 +60,21 @@ async function saveRoom(room) {
       word_list: WORD_LIST,
       grid: room.grid,
       started_at: room.startedAt ? new Date(room.startedAt).toISOString() : null,
-      ends_at: room.endsAt ? new Date(room.endsAt).toISOString() : null
+      ends_at: room.endsAt ? new Date(room.endsAt).toISOString() : null,
+      state_json: serializeRoomState(room)
     };
     // Upsert
-    await sbQuery('POST', 'wordpuzzle_rooms', data);
+    await sbQuery('POST', 'wordpuzzle_rooms', data, { on_conflict: 'room_code' });
   } catch(e) {
     console.log('saveRoom error (non-fatal):', e.message);
   }
+}
+
+function serializeRoomState(room) {
+  return {
+    players: room.players || {},
+    finalScores: room.finalScores || null
+  };
 }
 
 async function updateRoomStatus(code, status) {
@@ -88,14 +97,9 @@ async function loadActiveRooms() {
   try {
     const rows = await sbQuery('GET', 'wordpuzzle_rooms', null, { 'status': 'in.(waiting,active)', 'select': '*' });
     if (!rows || !rows.length) return;
-    const now = Date.now();
     for (const row of rows) {
-      // Skip expired rooms
-      if (row.ends_at && new Date(row.ends_at).getTime() < now) {
-        await deleteRoom(row.room_code);
-        continue;
-      }
       // Restore into memory
+      const saved = row.state_json || {};
       rooms[row.room_code] = {
         code: row.room_code,
         hostId: null, // host not connected yet
@@ -103,10 +107,12 @@ async function loadActiveRooms() {
         status: row.status,
         grid: row.grid || [],
         placements: row.grid ? buildPlacementsFromGrid(row.grid, WORD_LIST) : {},
-        players: {},
+        players: Object.fromEntries(Object.entries(saved.players || {}).map(([id, p]) => [id, { ...p, disconnected: true }])),
         startedAt: row.started_at ? new Date(row.started_at).getTime() : null,
         endsAt: row.ends_at ? new Date(row.ends_at).getTime() : null,
-        timerInterval: null
+        timerInterval: null,
+        ending: false,
+        finalScores: saved.finalScores || null
       };
       // If room was active, restart timer
       if (row.status === 'active' && row.ends_at) {
@@ -233,16 +239,23 @@ function getPublicPlayers(room) {
   }));
 }
 
+function getPlayerState(room, socketId) {
+  const p = room.players[socketId];
+  return p ? { wordsFound: [...p.wordsFound], lastWordAt: p.lastWordAt, finishedAt: p.finishedAt } : null;
+}
+
 function endRoom(code, reason) {
   const room = rooms[code];
-  if (!room) return;
+  if (!room || room.ending || room.status === 'finished') return;
   if (room.timerInterval) { clearInterval(room.timerInterval); room.timerInterval = null; }
-  room.status = 'finished';
+  room.ending = true;
 
   // Wait 2 seconds before calculating final scores to allow any in-flight
   // word_found events from the last seconds of the game to arrive first.
-  setTimeout(() => {
+  setTimeout(async () => {
     if (!rooms[code]) return;
+    room.status = 'finished';
+    room.ending = false;
     const finalScores = Object.values(room.players).map(p => ({
       name: p.name,
       wordsFound: Array.isArray(p.wordsFound) ? p.wordsFound.length : (p.wordsFound || 0),
@@ -253,17 +266,19 @@ function endRoom(code, reason) {
           : GAME_DURATION
     })).sort((a, b) => b.wordsFound - a.wordsFound || a.timeTaken - b.timeTaken);
 
+    room.finalScores = finalScores;
+    await saveRoom(room);
     io.to(code).emit('game_ended', { reason, finalScores });
-  }, 2000);
-  updateRoomStatus(code, 'finished');
+    updateRoomStatus(code, 'finished');
+  }, 2500);
 
   setTimeout(() => {
     if (rooms[code]) {
       Object.keys(rooms[code].players).forEach(sid => { delete socketRoom[sid]; });
       delete rooms[code];
     }
-    deleteRoom(code);
-  }, 30000);
+      // Keep the finished row in Supabase as the permanent result record.
+  }, 10 * 60 * 1000);
 }
 
 function isNameTaken(name) {
@@ -325,8 +340,10 @@ io.on('connection', (socket) => {
       status: room.status,
       grid: room.grid,
       endsAt: room.endsAt,
+      serverNow: Date.now(),
       players,
-      isHost: isNowHost
+      isHost: isNowHost,
+      playerState: getPlayerState(room, socket.id)
     });
     io.to(code).emit('player_joined', { players });
     console.log(`${name} reconnected to room ${code} (host: ${isNowHost})`);
@@ -344,7 +361,7 @@ io.on('connection', (socket) => {
       code, hostId: socket.id, hostName: name, status: 'waiting',
       grid: [], placements: {},
       players: { [socket.id]: { name, wordsFound: [], lastWordAt: null, finishedAt: null, joinedAt: Date.now() } },
-      startedAt: null, endsAt: null, timerInterval: null
+      startedAt: null, endsAt: null, timerInterval: null, ending: false, finalScores: null
     };
     socketRoom[socket.id] = code;
     socket.join(code);
@@ -383,7 +400,7 @@ io.on('connection', (socket) => {
       const players = getPublicPlayers(room);
       const isNowHost = room.hostId === socket.id;
       if (room.status === 'active') {
-        socket.emit('room_joined', { code, status: 'active', grid: room.grid, endsAt: room.endsAt, players, isHost: isNowHost });
+        socket.emit('room_joined', { code, status: 'active', grid: room.grid, endsAt: room.endsAt, serverNow: Date.now(), players, isHost: isNowHost, playerState: getPlayerState(room, socket.id) });
       } else {
         socket.emit('room_joined', { code, status: 'waiting', players, isHost: isNowHost });
       }
@@ -412,7 +429,7 @@ io.on('connection', (socket) => {
 
     const players = getPublicPlayers(room);
     if (room.status === 'active') {
-      socket.emit('room_joined', { code, status: 'active', grid: room.grid, endsAt: room.endsAt, players });
+      socket.emit('room_joined', { code, status: 'active', grid: room.grid, endsAt: room.endsAt, serverNow: Date.now(), players, playerState: getPlayerState(room, socket.id) });
     } else {
       socket.emit('room_joined', { code, status: 'waiting', players });
     }
@@ -448,6 +465,8 @@ io.on('connection', (socket) => {
     room.status = 'active';
     room.startedAt = Date.now();
     room.endsAt = Date.now() + GAME_DURATION * 1000;
+    room.ending = false;
+    room.finalScores = null;
 
     io.to(code).emit('game_started', { grid, endsAt: room.endsAt, serverNow: Date.now(), players: getPublicPlayers(room) });
     saveRoom(room);
@@ -462,21 +481,39 @@ io.on('connection', (socket) => {
     console.log(`Game started in room ${code}`);
   });
 
-  socket.on('word_found', ({ word }) => {
+  socket.on('word_found', async ({ word, cells, foundAt, submissionId }, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
     const code = socketRoom[socket.id];
-    if (!code) return;
+    if (!code) return reply({ ok: false, retryable: true, submissionId });
     const room = rooms[code];
-    if (!room || room.status !== 'active') return;
+    if (!room || room.status !== 'active') return reply({ ok: false, retryable: false, submissionId, reason: 'game_not_active' });
     const player = room.players[socket.id];
-    if (!player || !WORD_LIST.includes(word) || player.wordsFound.includes(word)) return;
+    if (!player || !WORD_LIST.includes(word)) return reply({ ok: false, retryable: false, submissionId, reason: 'invalid_word' });
+    const selected = Array.isArray(cells) ? cells.map(c => ({ r: Number(c.r), c: Number(c.c) })) : [];
+    const dr = selected.length > 1 ? selected[1].r - selected[0].r : 0;
+    const dc = selected.length > 1 ? selected[1].c - selected[0].c : 0;
+    const straight = DIRECTIONS.some(([r, c]) => r === dr && c === dc) &&
+      selected.every((cell, i) => i === 0 || (cell.r === selected[0].r + dr * i && cell.c === selected[0].c + dc * i));
+    const selectedText = selected.every(c => c.r >= 0 && c.r < GRID_SIZE && c.c >= 0 && c.c < GRID_SIZE)
+      ? selected.map(c => room.grid[c.r][c.c]).join('') : '';
+    if (!straight || (selectedText !== word && selectedText.split('').reverse().join('') !== word))
+      return reply({ ok: false, retryable: false, submissionId, reason: 'invalid_selection' });
+    const clientFoundAt = Number(foundAt);
+    if (!Number.isFinite(clientFoundAt) || clientFoundAt < room.startedAt - 5000 || clientFoundAt > room.endsAt + 1500)
+      return reply({ ok: false, retryable: false, submissionId, reason: 'outside_game_time' });
+    if (player.wordsFound.includes(word))
+      return reply({ ok: true, duplicate: true, submissionId, playerState: getPlayerState(room, socket.id) });
 
     player.wordsFound.push(word);
-    player.lastWordAt = Date.now();
-    if (player.wordsFound.length === WORD_LIST.length) player.finishedAt = Date.now();
+    player.lastWordAt = Math.min(clientFoundAt, room.endsAt);
+    if (player.wordsFound.length === WORD_LIST.length) player.finishedAt = player.lastWordAt;
+
+    await saveRoom(room);
+    reply({ ok: true, submissionId, playerState: getPlayerState(room, socket.id) });
 
     io.to(code).emit('scores_updated', { players: getPublicPlayers(room) });
 
-    if (Object.values(room.players).every(p => p.finishedAt !== null)) {
+    if (!room.ending && Object.values(room.players).length > 0 && Object.values(room.players).every(p => p.finishedAt !== null)) {
       clearInterval(room.timerInterval);
       endRoom(code, 'all_finished');
     }
