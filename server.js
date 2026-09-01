@@ -77,6 +77,19 @@ function serializeRoomState(room) {
   };
 }
 
+function queueRoomSave(room) {
+  room.persistChain = (room.persistChain || Promise.resolve()).then(() => saveRoom(room));
+  return room.persistChain;
+}
+
+function scheduleRoomSave(room, delay = 750) {
+  if (room.persistTimer) return;
+  room.persistTimer = setTimeout(() => {
+    room.persistTimer = null;
+    queueRoomSave(room);
+  }, delay);
+}
+
 async function updateRoomStatus(code, status) {
   try {
     await sbQuery('PATCH', `wordpuzzle_rooms?room_code=eq.${code}`, { status });
@@ -267,7 +280,8 @@ function endRoom(code, reason) {
     })).sort((a, b) => b.wordsFound - a.wordsFound || a.timeTaken - b.timeTaken);
 
     room.finalScores = finalScores;
-    await saveRoom(room);
+    if (room.persistTimer) { clearTimeout(room.persistTimer); room.persistTimer = null; }
+    await queueRoomSave(room);
     io.to(code).emit('game_ended', { reason, finalScores });
     updateRoomStatus(code, 'finished');
   }, 2500);
@@ -365,7 +379,7 @@ io.on('connection', (socket) => {
     };
     socketRoom[socket.id] = code;
     socket.join(code);
-    saveRoom(rooms[code]);
+    queueRoomSave(rooms[code]);
     socket.emit('room_created', { code, players: getPublicPlayers(rooms[code]) });
     console.log(`Room ${code} created by ${name}`);
   });
@@ -469,7 +483,7 @@ io.on('connection', (socket) => {
     room.finalScores = null;
 
     io.to(code).emit('game_started', { grid, endsAt: room.endsAt, serverNow: Date.now(), players: getPublicPlayers(room) });
-    saveRoom(room);
+    queueRoomSave(room);
 
     room.timerInterval = setInterval(() => {
       if (Date.now() >= room.endsAt) {
@@ -481,7 +495,7 @@ io.on('connection', (socket) => {
     console.log(`Game started in room ${code}`);
   });
 
-  socket.on('word_found', async ({ word, cells, foundAt, submissionId }, ack) => {
+  socket.on('word_found', ({ word, cells, foundAt, submissionId }, ack) => {
     const reply = typeof ack === 'function' ? ack : () => {};
     const code = socketRoom[socket.id];
     if (!code) return reply({ ok: false, retryable: true, submissionId });
@@ -508,10 +522,17 @@ io.on('connection', (socket) => {
     player.lastWordAt = Math.min(clientFoundAt, room.endsAt);
     if (player.wordsFound.length === WORD_LIST.length) player.finishedAt = player.lastWordAt;
 
-    await saveRoom(room);
     reply({ ok: true, submissionId, playerState: getPlayerState(room, socket.id) });
+    scheduleRoomSave(room);
 
-    io.to(code).emit('scores_updated', { players: getPublicPlayers(room) });
+    io.to(code).emit('scores_updated', { player: {
+      id: socket.id,
+      name: player.name,
+      wordsFound: player.wordsFound.length,
+      lastWordAt: player.lastWordAt,
+      finishedAt: player.finishedAt,
+      isHost: socket.id === room.hostId
+    }});
 
     if (!room.ending && Object.values(room.players).length > 0 && Object.values(room.players).every(p => p.finishedAt !== null)) {
       clearInterval(room.timerInterval);
